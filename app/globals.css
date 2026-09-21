@@ -84,6 +84,10 @@ textarea { width: 100%; min-height: 96px; background: var(--surface); color: var
 .locate-btn { flex: none; min-height: 52px; padding: 0 16px; border-radius: 12px; border: 2px solid var(--line); background: var(--surface); color: var(--ink); font: inherit; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 8px; }
 .locate-btn:disabled { opacity: 0.6; }
 .picked-place { margin-top: 10px; padding: 12px 14px; border-radius: 12px; background: var(--surface2); font-size: 15px; }
+.suggestions { position: absolute; top: 100%; left: 0; right: 62px; z-index: 20; margin: 4px 0 0; padding: 6px; list-style: none; background: var(--surface2); border: 2px solid var(--line); border-radius: 12px; max-height: 260px; overflow-y: auto; }
+.suggestions li { margin: 0; }
+.suggestions button { width: 100%; text-align: left; padding: 10px 8px; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 15px; border-radius: 8px; cursor: pointer; }
+.suggestions button:hover, .suggestions button:focus-visible { background: var(--surface); }
 
 .tag { display: inline-block; font-size: 13px; font-weight: 700; padding: 3px 9px; border-radius: 7px; border: 2px solid var(--muted); color: var(--muted); }
 .note { font-size: 15px; color: var(--muted); margin: 8px 0 0; }

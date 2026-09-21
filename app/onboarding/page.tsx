@@ -2,9 +2,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { LANGUAGES, makeT } from "@/lib/i18n";
-import { fromPlaceResult, loadGoogleMaps, MAPS_KEY, type GeoResult } from "@/lib/maps";
 import { DWELLINGS, OCCUPATIONS, VULNERABILITIES, loadProfile, saveProfile } from "@/lib/options";
-import type { Profile } from "@/lib/types";
+import type { Location, Profile } from "@/lib/types";
 
 const EMPTY: Profile = { label: "", lat: NaN, lng: NaN, district: "", state: "", dwelling_type: "", occupation: "", vulnerabilities: [], language: "en" };
 const legend = { fontWeight: 700, margin: "22px 0 8px" } as const;
@@ -26,34 +25,45 @@ export default function Onboarding() {
   const [saving, setSaving] = useState(false);
   const [locating, setLocating] = useState(false);
   const [locErr, setLocErr] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [query, setQuery] = useState("");
+  const [suggestions, setSuggestions] = useState<Location[]>([]);
+  const [searching, setSearching] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const skipNextSearch = useRef(false);
   const t = makeT(p.language);
 
   useEffect(() => {
     const saved = loadProfile();
-    if (saved) setP(saved);
+    if (saved) { setP(saved); setQuery(saved.label ?? ""); }
   }, []);
   useEffect(() => { document.documentElement.lang = p.language; }, [p.language]);
 
+  // Debounced search-as-you-type against Nominatim (proxied server-side).
   useEffect(() => {
-    if (!MAPS_KEY || !inputRef.current) return;
-    let ac: any;
-    loadGoogleMaps().then((google) => {
-      ac = new google.maps.places.Autocomplete(inputRef.current, {
-        componentRestrictions: { country: "in" },
-        fields: ["formatted_address", "geometry", "address_components", "name"],
-      });
-      ac.addListener("place_changed", () => {
-        const g = fromPlaceResult(ac.getPlace());
-        if (g) applyLocation(g);
-      });
-    }).catch(() => setLocErr("mapsMissing"));
-  }, [MAPS_KEY ? 1 : 0]);
+    if (skipNextSearch.current) { skipNextSearch.current = false; return; }
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (query.trim().length < 3) { setSuggestions([]); return; }
+    debounceRef.current = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const res = await fetch(`/api/geocode/search?q=${encodeURIComponent(query)}`);
+        const d = await res.json();
+        setSuggestions(d.results ?? []);
+      } catch {
+        setSuggestions([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 400);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [query]);
 
-  function applyLocation(g: GeoResult) {
+  function applyLocation(g: Location) {
     setLocErr("");
+    setSuggestions([]);
+    skipNextSearch.current = true;
+    setQuery(g.label);
     setP((prev) => ({ ...prev, label: g.label, lat: g.lat, lng: g.lng, district: g.district, state: g.state }));
-    if (inputRef.current) inputRef.current.value = g.label;
   }
 
   function useMyLocation() {
@@ -63,15 +73,13 @@ export default function Onboarding() {
       async (pos) => {
         const { latitude: lat, longitude: lng } = pos.coords;
         try {
-          const google = await loadGoogleMaps();
-          new google.maps.Geocoder().geocode({ location: { lat, lng } }, (results: any, status: string) => {
-            setLocating(false);
-            if (status === "OK" && results?.[0]) applyLocation(fromPlaceResult(results[0])!);
-            else applyLocation({ label: `${lat.toFixed(4)}, ${lng.toFixed(4)}`, lat, lng, district: "", state: "" });
-          });
+          const res = await fetch(`/api/geocode/reverse?lat=${lat}&lng=${lng}`);
+          const d = await res.json();
+          applyLocation(d.result);
         } catch {
-          setLocating(false);
           applyLocation({ label: `${lat.toFixed(4)}, ${lng.toFixed(4)}`, lat, lng, district: "", state: "" });
+        } finally {
+          setLocating(false);
         }
       },
       () => { setLocating(false); setLocErr("locOff"); },
@@ -104,13 +112,23 @@ export default function Onboarding() {
         </select>
 
         <label className="field" htmlFor="location">{t("locationQ")}</label>
-        <div className="locate-row">
-          <input ref={inputRef} id="location" type="text" defaultValue={p.label} placeholder={t("searchPlaceholder")}
-            onBlur={(e) => { if (!p.lat && e.target.value) set("label", e.target.value); }} />
+        <div className="locate-row" style={{ position: "relative" }}>
+          <input
+            id="location" type="text" value={query} placeholder={t("searchPlaceholder")} autoComplete="off"
+            onChange={(e) => { setQuery(e.target.value); setP((prev) => ({ ...prev, label: e.target.value, lat: NaN, lng: NaN })); }}
+          />
           <button type="button" className="locate-btn" onClick={useMyLocation} disabled={locating} aria-label={t("useMyLocation")}>
             <LocateIcon />
           </button>
+          {suggestions.length > 0 && (
+            <ul className="suggestions">
+              {suggestions.map((s, i) => (
+                <li key={i}><button type="button" onClick={() => applyLocation(s)}>{s.label}</button></li>
+              ))}
+            </ul>
+          )}
         </div>
+        {searching && <p className="muted" style={{ marginTop: 8 }}>{t("locating")}</p>}
         {locating && <p className="muted" style={{ marginTop: 8 }}>{t("locating")}</p>}
         {locErr && <p className="muted" style={{ marginTop: 8 }}>{t(locErr as any)}</p>}
         {p.label && Number.isFinite(p.lat) && <p className="picked-place">📍 {p.label}</p>}

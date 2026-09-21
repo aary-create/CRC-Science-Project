@@ -1,40 +1,18 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { useT } from "@/lib/i18n";
-import { loadGoogleMaps, MAPS_KEY } from "@/lib/maps";
+import { darkenTiles, loadLeaflet } from "@/lib/leaflet";
 import seed from "@/data/seed.json";
 const { helplines } = seed;
 import { loadProfile } from "@/lib/options";
-import { haversineKm } from "@/lib/geo";
 import type { HelpPlace } from "@/lib/types";
-
-declare global { interface Window { google?: any } }
-
-function searchHospitals(google: any, lat: number, lng: number): Promise<any[]> {
-  return new Promise((resolve) => {
-    const svc = new google.maps.places.PlacesService(document.createElement("div"));
-    svc.nearbySearch(
-      { location: { lat, lng }, rankBy: google.maps.places.RankBy.DISTANCE, type: "hospital" },
-      (results: any[], status: string) => resolve(status === "OK" && results ? results.slice(0, 8) : [])
-    );
-  });
-}
-
-function getDetails(google: any, placeId: string): Promise<string | undefined> {
-  return new Promise((resolve) => {
-    const svc = new google.maps.places.PlacesService(document.createElement("div"));
-    svc.getDetails({ placeId, fields: ["formatted_phone_number"] }, (r: any, status: string) =>
-      resolve(status === "OK" ? r?.formatted_phone_number : undefined)
-    );
-  });
-}
 
 export default function Help() {
   const mapEl = useRef<HTMLDivElement>(null);
   const { t } = useT();
   const [me, setMe] = useState<{ lat: number; lng: number } | null>(null);
   const [hospitals, setHospitals] = useState<HelpPlace[] | null>(null);
-  const [error, setError] = useState<"" | "noGeo" | "locOff" | "mapsMissing">("");
+  const [error, setError] = useState<"" | "noGeo" | "locOff">("");
 
   useEffect(() => {
     const p = loadProfile();
@@ -49,32 +27,37 @@ export default function Help() {
 
   useEffect(() => {
     if (!me) return;
-    if (!MAPS_KEY) return setError("mapsMissing");
-    loadGoogleMaps().then(async (google) => {
-      const results = await searchHospitals(google, me.lat, me.lng);
-      const withPhones = await Promise.all(
-        results.map(async (r, i): Promise<HelpPlace> => ({
-          name: r.name,
-          lat: r.geometry.location.lat(),
-          lng: r.geometry.location.lng(),
-          place_id: r.place_id,
-          phone: i < 5 ? await getDetails(google, r.place_id) : undefined,
-          distance_km: haversineKm(me, { lat: r.geometry.location.lat(), lng: r.geometry.location.lng() }),
-        }))
-      );
-      setHospitals(withPhones);
+    fetch(`/api/hospitals?lat=${me.lat}&lng=${me.lng}`)
+      .then((r) => r.json())
+      .then((d) => setHospitals(d.hospitals ?? []))
+      .catch(() => setHospitals([]));
 
-      if (!mapEl.current) return;
-      const map = new google.maps.Map(mapEl.current, { center: me, zoom: 13, disableDefaultUI: true, zoomControl: true });
-      new google.maps.Marker({ position: me, map, title: t("youAreHere"), icon: { path: google.maps.SymbolPath.CIRCLE, scale: 9, fillColor: "#7cc4ff", fillOpacity: 1, strokeColor: "#fff", strokeWeight: 2 } });
-      const bounds = new google.maps.LatLngBounds(me);
-      withPhones.forEach((h) => {
-        new google.maps.Marker({ position: { lat: h.lat, lng: h.lng }, map, title: h.name, label: "H" });
-        bounds.extend(h);
-      });
-      map.fitBounds(bounds, 48);
-    }).catch(() => setError("mapsMissing"));
+    if (!mapEl.current) return;
+    loadLeaflet().then((L) => {
+      const map = L.map(mapEl.current, { zoomControl: true, attributionControl: true }).setView([me.lat, me.lng], 13);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        maxZoom: 19,
+      }).addTo(map);
+      darkenTiles(map);
+      L.circleMarker([me.lat, me.lng], { radius: 8, color: "#fff", weight: 2, fillColor: "#7cc4ff", fillOpacity: 1 })
+        .addTo(map).bindPopup(t("youAreHere"));
+      (mapEl.current as any)._leafletMap = map;
+    }).catch(() => {});
   }, [me?.lat, me?.lng]);
+
+  // Plot hospital markers once both the map and the results are ready.
+  useEffect(() => {
+    const map = (mapEl.current as any)?._leafletMap;
+    if (!map || !hospitals || !window.L) return;
+    const L = window.L;
+    const bounds = L.latLngBounds([[me!.lat, me!.lng]]);
+    hospitals.forEach((h) => {
+      L.marker([h.lat, h.lng]).addTo(map).bindPopup(h.name);
+      bounds.extend([h.lat, h.lng]);
+    });
+    if (hospitals.length) map.fitBounds(bounds, { padding: [40, 40] });
+  }, [hospitals]);
 
   return (
     <main>
@@ -82,7 +65,7 @@ export default function Help() {
       <p className="muted">{t("hospitalsNote")}</p>
       {error && <p className="banner">{t(error)}</p>}
 
-      {MAPS_KEY && me && <div ref={mapEl} className="map" />}
+      {me && <div ref={mapEl} className="map" />}
 
       <h2>{t("findNearestHospital")}</h2>
       {hospitals === null ? (
@@ -97,7 +80,7 @@ export default function Help() {
               <div className="muted">{t("distanceAway", { km: h.distance_km.toFixed(1) })}</div>
               <div className="row" style={{ marginTop: 8 }}>
                 {h.phone && <a className="btn ghost" href={`tel:${h.phone}`}>{t("call", { n: h.phone })}</a>}
-                <a className="btn ghost" href={`https://www.google.com/maps/dir/?api=1&destination=${h.lat},${h.lng}&destination_place_id=${h.place_id}`} target="_blank" rel="noreferrer">{t("directions")}</a>
+                <a className="btn ghost" href={`https://www.openstreetmap.org/directions?to=${h.lat},${h.lng}`} target="_blank" rel="noreferrer">{t("directions")}</a>
               </div>
             </li>
           ))}
